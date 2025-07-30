@@ -66,28 +66,81 @@ ISR(SPI_STC_vect, ISR_NAKED) {
   );
 }
 
-void apply_io_logic() { ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { DDRA = spi_rx_buf[8]; DDRB = spi_rx_buf[9]; DDRC = spi_rx_buf[10]; DDRD = spi_rx_buf[11]; DDRE = spi_rx_buf[12]; DDRF = spi_rx_buf[13]; DDRG = spi_rx_buf[14]; DDRH = spi_rx_buf[15];
 
-PORTA = spi_rx_buf[0]; PORTB = spi_rx_buf[1]; PORTC = spi_rx_buf[2]; PORTD = spi_rx_buf[3];
-PORTE = spi_rx_buf[4]; PORTF = spi_rx_buf[5]; PORTG = spi_rx_buf[6]; PORTH = spi_rx_buf[7];
+// Improved buffer layout and synchronization
+volatile uint8_t spi_rx_buf[16];  // 8 bytes output + 8 bytes direction
+volatile uint8_t spi_tx_buf[16];  // 8 bytes input + 8 bytes status/unused
+volatile uint8_t spi_index = 0;
+volatile uint8_t last_input[8];
+volatile uint8_t new_event = 0;
+volatile uint8_t transaction_complete = 0;
 
-uint8_t new_input[8];
-new_input[0] = PINA; new_input[1] = PINB; new_input[2] = PINC; new_input[3] = PIND;
-new_input[4] = PINE; new_input[5] = PINF; new_input[6] = PING; new_input[7] = PINH;
-
-uint8_t changed = 0;
-for (uint8_t i = 0; i < 8; i++) {
-  spi_tx_buf[i] = new_input[i];
-  if (new_input[i] != last_input[i]) changed = 1;
-  last_input[i] = new_input[i];
+// Fixed apply_io_logic with proper synchronization
+void apply_io_logic() {
+  uint8_t local_rx_buf[16];
+  uint8_t new_input[8];
+  
+  // Copy SPI data atomically
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    if (transaction_complete) {
+      memcpy(local_rx_buf, (const uint8_t*)spi_rx_buf, 16);
+      transaction_complete = 0;
+    } else {
+      return; // No new data
+    }
+  }
+  
+  // Preserve SPI pins in DDRB
+  uint8_t spi_ddrb_bits = DDRB & ((1 << PB2) | (1 << PB3) | (1 << PB1) | (1 << PB0));
+  
+  // Apply direction settings (preserve SPI bits)
+  DDRA = local_rx_buf[8];
+  DDRB = local_rx_buf[9] | spi_ddrb_bits;  // Keep SPI pins configured
+  DDRC = local_rx_buf[10];
+  DDRD = local_rx_buf[11];
+  DDRE = local_rx_buf[12];
+  DDRF = local_rx_buf[13];
+  DDRG = local_rx_buf[14];
+  DDRH = local_rx_buf[15];
+  
+  // Apply output values
+  PORTA = local_rx_buf[0];
+  PORTB = (PORTB & spi_ddrb_bits) | (local_rx_buf[1] & ~spi_ddrb_bits);
+  PORTC = local_rx_buf[2];
+  PORTD = local_rx_buf[3];
+  PORTE = local_rx_buf[4];
+  PORTF = local_rx_buf[5];
+  PORTG = local_rx_buf[6];
+  PORTH = local_rx_buf[7];
+  
+  // Read inputs
+  new_input[0] = PINA;
+  new_input[1] = PINB;
+  new_input[2] = PINC;
+  new_input[3] = PIND;
+  new_input[4] = PINE;
+  new_input[5] = PINF;
+  new_input[6] = PING;
+  new_input[7] = PINH;
+  
+  // Check for changes and update TX buffer
+  uint8_t changed = 0;
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    for (uint8_t i = 0; i < 8; i++) {
+      spi_tx_buf[i] = new_input[i];
+      if (new_input[i] != last_input[i]) {
+        changed = 1;
+      }
+      last_input[i] = new_input[i];
+    }
+  }
+  
+  // Signal event if changes detected
+  if (changed && !new_event) {
+    PORTJ |= (1 << EVENT_PIN);
+    new_event = 1;
+  }
 }
-
-if (changed) {
-  PORTJ |= (1 << EVENT_PIN);
-  new_event = 1;
-}
-
-} }
 
 void clear_event_if_needed() { if (new_event) { PORTJ &= ~(1 << EVENT_PIN); new_event = 0; } }
 
