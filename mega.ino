@@ -10,7 +10,61 @@ void setup_event_pin() { DDRJ |= (1 << EVENT_PIN); PORTJ &= ~(1 << EVENT_PIN); }
 
 void setup_spi_slave() { DDRB |= (1 << PB3); // MISO SPCR = (1 << SPE) | (1 << SPIE); SPDR = spi_tx_buf[0]; }
 
-ISR(SPI_STC_vect, ISR_NAKED) { asm volatile ( "push r0                \n\t" "in r0, SREG        \n\t" "push r0                \n\t" "push r24               \n\t" "in r24, %[spdr]        \n\t" "lds r0, spi_index      \n\t" "sts spi_rx_buf + r0, r24 \n\t" "lds r24, spi_tx_buf + r0 \n\t" "out %[spdr], r24       \n\t" "inc r0                 \n\t" "cpi r0, 24             \n\t" "brlo 1f                \n\t" "ldi r0, 0              \n\t" "1:                     \n\t" "sts spi_index, r0      \n\t" "pop r24                \n\t" "pop r0                 \n\t" "out SREG, r0       \n\t" "pop r0                 \n\t" "reti                   \n\t" : : [spdr] "I" (_SFR_IO_ADDR(SPDR)) ); }
+//ISR(SPI_STC_vect, ISR_NAKED) { asm volatile ( "push r0                \n\t" "in r0, SREG        \n\t" "push r0                \n\t" "push r24               \n\t" "in r24, %[spdr]        \n\t" "lds r0, spi_index      \n\t" "sts spi_rx_buf + r0, r24 \n\t" "lds r24, spi_tx_buf + r0 \n\t" "out %[spdr], r24       \n\t" "inc r0                 \n\t" "cpi r0, 24             \n\t" "brlo 1f                \n\t" "ldi r0, 0              \n\t" "1:                     \n\t" "sts spi_index, r0      \n\t" "pop r24                \n\t" "pop r0                 \n\t" "out SREG, r0       \n\t" "pop r0                 \n\t" "reti                   \n\t" : : [spdr] "I" (_SFR_IO_ADDR(SPDR)) ); }
+// Fixed SPI ISR with proper inline assembly
+ISR(SPI_STC_vect, ISR_NAKED) {
+  asm volatile (
+    "push r0                \n\t"
+    "in r0, __SREG__        \n\t"
+    "push r0                \n\t"
+    "push r24               \n\t"
+    "push r30               \n\t"
+    "push r31               \n\t"
+    
+    // Read incoming byte
+    "in r24, %[spdr]        \n\t"
+    
+    // Load index and set up pointer to rx_buf
+    "lds r30, spi_index     \n\t"
+    "ldi r31, hi8(spi_rx_buf)\n\t"
+    "ldi r30, lo8(spi_rx_buf)\n\t"
+    "lds r0, spi_index      \n\t"
+    "add r30, r0            \n\t"
+    "adc r31, __zero_reg__  \n\t"
+    
+    // Store received byte
+    "st Z, r24              \n\t"
+    
+    // Set up pointer to tx_buf
+    "ldi r31, hi8(spi_tx_buf)\n\t"
+    "ldi r30, lo8(spi_tx_buf)\n\t"
+    "add r30, r0            \n\t"
+    "adc r31, __zero_reg__  \n\t"
+    
+    // Load and send next byte
+    "ld r24, Z              \n\t"
+    "out %[spdr], r24       \n\t"
+    
+    // Increment and wrap index (0-15, not 24)
+    "inc r0                 \n\t"
+    "cpi r0, 16             \n\t"
+    "brlo 1f                \n\t"
+    "ldi r0, 0              \n\t"
+    "1:                     \n\t"
+    "sts spi_index, r0      \n\t"
+    
+    "pop r31                \n\t"
+    "pop r30                \n\t"
+    "pop r24                \n\t"
+    "pop r0                 \n\t"
+    "out __SREG__, r0       \n\t"
+    "pop r0                 \n\t"
+    "reti                   \n\t"
+    :
+    : [spdr] "I" (_SFR_IO_ADDR(SPDR))
+    : "memory"
+  );
+}
 
 void apply_io_logic() { ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { DDRA = spi_rx_buf[8]; DDRB = spi_rx_buf[9]; DDRC = spi_rx_buf[10]; DDRD = spi_rx_buf[11]; DDRE = spi_rx_buf[12]; DDRF = spi_rx_buf[13]; DDRG = spi_rx_buf[14]; DDRH = spi_rx_buf[15];
 
